@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini Map Test</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        #minimap {
+            width: 500px;
+            height: 500px;
+            background-image: url('/image/bf.png');
+            background-size: cover;
+            position: relative;
+            cursor: crosshair;
+            border: 1px solid #000;
+        }
+
+        .ping {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            position: absolute;
+            animation: blink 1s infinite;
+            transform: translate(-50%, -50%);
+        }
+
+        .ping-label {
+            position: absolute;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            transform: translate(-50%, -150%);
+            white-space: nowrap;
+        }
+
+        .line {
+            position: absolute;
+            background-color: yellow;
+            height: 2px;
+        }
+
+        .icon {
+            width: 30px;
+            height: 30px;
+            cursor: grab;
+            user-select: none;
+        }
+
+        input[type="text"] {
+            width: 200px;
+            padding: 5px;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        #contextMenu {
+            display: none;
+            position: absolute;
+            z-index: 1000;
+            width: 120px;
+            background-color: white;
+            border: 1px solid #ccc;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        #contextMenu ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        #contextMenu ul li {
+            padding: 8px;
+            cursor: pointer;
+        }
+
+        #contextMenu ul li:hover {
+            background-color: #f2f2f2;
+        }
+
+        @keyframes blink {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Mini Map Test</h1>
+    <input type="text" id="username" placeholder="Enter your name" />
+    <input type="color" id="pingColor" value="#ff0000" />
+    <br>
+    <div id="minimap" ondrop="drop(event)" ondragover="allowDrop(event)" oncontextmenu="showContextMenu(event)"></div>
+
+    <!-- เมนูคลิกขวา -->
+    <div id="contextMenu">
+        <ul>
+            <li onclick="placeIcon(event, 'helpflag.png')">Help Flag</li>
+            <!-- เพิ่มไอคอนอื่น ๆ ที่ต้องการ -->
+            <li onclick="placeIcon(event, 'othericon.png')">Other Icon</li>
+        </ul>
+    </div>
+    
+    <!-- เสียงปิ้ง -->
+    <audio id="pingSound" src="/sounds/ping.mp3"></audio>
+
+    <script>
+        const socket = io();
+        let isDrawing = false;
+        let startX, startY;
+        let mouseMoved = false;
+        let clickStartTime;
+        let drawnLines = [];
+        let rightClickPosition = { x: 0, y: 0 };
+
+        const minimap = document.getElementById('minimap');
+        const contextMenu = document.getElementById('contextMenu');
+
+        // ฟังก์ชันแสดงเมนูคลิกขวา
+        function showContextMenu(event) {
+            event.preventDefault();
+            rightClickPosition = {
+                x: event.clientX - minimap.getBoundingClientRect().left,
+                y: event.clientY - minimap.getBoundingClientRect().top
+            };
+            contextMenu.style.display = 'block';
+            contextMenu.style.left = `${event.clientX}px`;
+            contextMenu.style.top = `${event.clientY}px`;
+        }
+
+        function hideContextMenu() {
+            contextMenu.style.display = 'none';
+        }
+
+        document.addEventListener('click', (event) => {
+            if (event.button !== 2) { // ไม่ใช่คลิกขวา
+                hideContextMenu();
+            }
+        });
+
+        // ฟังก์ชันวางไอคอนในตำแหน่งที่คลิกขวา
+        function placeIcon(event, iconName) {
+            hideContextMenu();
+
+            const iconPath = `/icon/${iconName}`;
+            const newIcon = document.createElement('img');
+            newIcon.src = iconPath;
+            newIcon.className = 'icon';
+            newIcon.style.position = 'absolute';
+            newIcon.style.left = `${rightClickPosition.x - 15}px`;
+            newIcon.style.top = `${rightClickPosition.y - 15}px`; // ลดขนาดครึ่งหนึ่งของไอคอนเพื่อให้อยู่ตรงกลาง
+            newIcon.setAttribute('draggable', 'false');
+            newIcon.style.cursor = 'pointer';
+            newIcon.dataset.iconId = Date.now(); // ใช้ timestamp เพื่อสร้าง ID ที่ไม่ซ้ำกัน
+
+            // เพิ่มฟังก์ชันการคลิกขวาเพื่อแสดงเมนู
+            newIcon.oncontextmenu = function(event) {
+                event.preventDefault();
+                rightClickedElement = newIcon;
+                showContextMenu(event);
+            };
+
+            minimap.appendChild(newIcon);
+
+            // ส่งข้อมูลการวางไอคอนไปยังเซิร์ฟเวอร์
+            socket.emit('place_icon', {
+                id: newIcon.dataset.iconId,
+                iconPath: iconPath,
+                x: rightClickPosition.x,
+                y: rightClickPosition.y
+            });
+        }
+
+        minimap.addEventListener('mousedown', (event) => {
+            if (event.button !== 2) { // ป้องกันการลากเส้นเมื่อคลิกขวา
+                startX = event.clientX - minimap.getBoundingClientRect().left;
+                startY = event.clientY - minimap.getBoundingClientRect().top;
+                isDrawing = true;
+                mouseMoved = false;
+                clickStartTime = Date.now();
+            }
+        });
+
+        minimap.addEventListener('mousemove', (event) => {
+            if (isDrawing) {
+                mouseMoved = true;
+
+                const currentX = event.clientX - minimap.getBoundingClientRect().left;
+                const currentY = event.clientY - minimap.getBoundingClientRect().top;
+
+                const length = Math.sqrt((currentX - startX) ** 2 + (currentY - startY) ** 2);
+                const angle = Math.atan2(currentY - startY, currentX - startX) * (180 / Math.PI);
+
+                const line = document.createElement('div');
+                line.className = 'line';
+                line.style.width = `${length}px`;
+                line.style.transform = `rotate(${angle}deg)`;
+                line.style.left = `${startX}px`;
+                line.style.top = `${startY}px`;
+
+                minimap.appendChild(line);
+                drawnLines.push(line);
+
+                // ส่งข้อมูลเส้นไปยังเซิร์ฟเวอร์
+                socket.emit('draw_line', {
+                    startX, startY, currentX, currentY, length, angle
+                });
+
+                // ลบเส้นหลังจาก 10 วินาที
+                setTimeout(() => {
+                    minimap.removeChild(line);
+                }, 10000);
+
+                startX = currentX;
+                startY = currentY;
+            }
+        });
+
+        minimap.addEventListener('mouseup', (event) => {
+            isDrawing = false;
+
+            const elapsedTime = Date.now() - clickStartTime;
+
+            if (elapsedTime < 150 && event.button === 0) { // เฉพาะคลิกซ้าย
+                // ลบเส้นที่ลากมาแล้ว
+                drawnLines.forEach(line => minimap.removeChild(line));
+                drawnLines = [];
+
+                // ถ้าเป็นคลิกซ้ายและเวลาลากเมาส์น้อยกว่า 150 มิลลิวินาที ให้ทำการ Ping แทน
+                handleMapClick(event);
+            } else {
+                // ล้างรายการเส้นที่ถูกวาดหลังจากลากเสร็จ
+                drawnLines = [];
+            }
+        });
+
+        function handleMapClick(event) {
+            const username = document.getElementById('username').value.trim();
+            const color = document.getElementById('pingColor').value;
+            if (!username) {
+                alert('Please enter your name before pinging.');
+                return;
+            }
+
+            const rect = minimap.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            const xPercent = (x / rect.width) * 100;
+            const yPercent = (y / rect.height) * 100;
+
+            socket.emit('ping', { x: xPercent, y: yPercent, user: username, color: color });
+        }
+
+        socket.on('ping', function(data) {
+            const pingElement = document.createElement('div');
+            pingElement.className = 'ping';
+            pingElement.style.left = `${data.x}%`;
+            pingElement.style.top = `${data.y}%`;
+            pingElement.style.backgroundColor = data.color;
+            minimap.appendChild(pingElement);
+            
+            const labelElement = document.createElement('div');
+            labelElement.className = 'ping-label';
+            labelElement.style.left = `${data.x}%`;
+            labelElement.style.top = `${data.y}%`;
+            labelElement.style.color = data.color;
+            labelElement.textContent = data.user;
+            minimap.appendChild(labelElement);
+
+            const pingSound = document.getElementById('pingSound');
+            pingSound.currentTime = 0;
+            pingSound.play();
+
+            setTimeout(() => {
+                minimap.removeChild(pingElement);
+                minimap.removeChild(labelElement);
+            }, 1110000);
+        });
+
+        socket.on('draw_line', function(data) {
+            const line = document.createElement('div');
+            line.className = 'line';
+            line.style.width = `${data.length}px`;
+            line.style.transform = `rotate(${data.angle}deg)`;
+            line.style.left = `${data.startX}px`;
+            line.style.top = `${data.startY}px`;
+
+            minimap.appendChild(line);
+
+            // ลบเส้นหลังจาก 10 วินาที
+            setTimeout(() => {
+                minimap.removeChild(line);
+            }, 10000);
+        });
+
+        socket.on('place_icon', function(data) {
+            const newIcon = document.createElement('img');
+            newIcon.src = data.iconPath;
+            newIcon.className = 'icon';
+            newIcon.style.position = 'absolute';
+            newIcon.style.left = `${data.x - 15}px`;
+            newIcon.style.top = `${data.y - 15}px`;
+            newIcon.setAttribute('draggable', 'false');
+            newIcon.style.cursor = 'pointer';
+            newIcon.dataset.iconId = data.id;
+
+            // เพิ่มฟังก์ชันการคลิกขวาเพื่อแสดงเมนู
+            newIcon.oncontextmenu = function(event) {
+                event.preventDefault();
+                rightClickedElement = newIcon;
+                showContextMenu(event);
+            };
+
+            minimap.appendChild(newIcon);
+        });
+    </script>
+</body>
+</html>
